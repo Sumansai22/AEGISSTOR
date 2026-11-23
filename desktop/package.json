@@ -1,0 +1,35 @@
+{
+  "name": "aegisstor-desktop",
+  "version": "1.0.0",
+  "description": "AEGISSTOR - Predictive Storage Management & System Performance Optimization",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "keywords": ["storage", "predictive", "optimization", "telemetry", "machine-learning"],
+  "author": "AEGISSTOR Systems",
+  "license": "MIT",
+  "dependencies": {
+    "electron-is-dev": "^2.0.0"
+  },
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.aegisstor.app",
+    "productName": "AEGISSTOR",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

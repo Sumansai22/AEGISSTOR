@@ -1,0 +1,103 @@
+{
+  "/api/v1/aws/status": {
+    "success": true,
+    "connected": true,
+    "status": "CONNECTED",
+    "account_id": "425178888081",
+    "arn": "arn:aws:sts::425178888081:assumed-role/AccountFullAccessRole/6438c4d8-6061-7026-33b9-888ebc960777",
+    "user_id": "AROAWF7VC66IUV6OOG7LD:6438c4d8-6061-7026-33b9-888ebc960777",
+    "region": "ap-southeast-2",
+    "profile": "aegisstor",
+    "message": "AWS connection verified successfully."
+  },
+  "/api/v1/aws/s3/bucket": {
+    "success": true,
+    "bucket_name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+    "region": "ap-southeast-2",
+    "profile": "aegisstor",
+    "status": "ACTIVE",
+    "retrieved_at": "2026-11-17 18:44:17 UTC",
+    "location": "ap-southeast-2",
+    "versioning_status": "Enabled",
+    "mfa_delete": "Disabled",
+    "encryption": {
+      "status": "Enabled",
+      "enabled": true,
+      "algorithm": "AES256",
+      "kms_master_key_id": "None (SSE-S3 Managed)",
+      "bucket_key_enabled": false
+    },
+    "ownership_controls": {
+      "status": "Enabled",
+      "object_ownership": "BucketOwnerEnforced",
+      "acls_disabled": true
+    },
+    "public_access_block": {
+      "status": "Enabled",
+      "is_fully_blocked": true,
+      "block_public_acls": true,
+      "ignore_public_acls": true,
+      "block_public_policy": true,
+      "restrict_public_buckets": true
+    },
+    "object_count": 1,
+    "total_size_bytes": 51,
+    "total_size_kb": 0.05,
+    "total_size_mb": 0.0,
+    "total_size_gb": 0.0,
+    "storage_class_breakdown": {
+      "STANDARD": 51
+    },
+    "latest_modified": "2026-11-17 18:31:27 UTC",
+    "sample_objects": [
+      {
+        "key": "test-storage.txt",
+        "size_bytes": 51,
+        "storage_class": "STANDARD",
+        "etag": "\"5c0c143839e35c82674a228ce2186143\"",
+        "last_modified": "2026-11-17 18:31:27 UTC"
+      }
+    ],
+    "data_source": "AWS S3 Official API (boto3 / ap-southeast-2)"
+  },
+  "/api/v1/aws/s3/object?key=test-storage.txt": {
+    "success": true,
+    "bucket_name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+    "key": "test-storage.txt",
+    "status": "EXISTS",
+    "content_length": 51,
+    "content_type": "text/plain",
+    "etag": "\"5c0c143839e35c82674a228ce2186143\"",
+    "last_modified": "2026-11-17 18:31:27 UTC",
+    "server_side_encryption": "AES256",
+    "version_id": "Oc8SxnPSIRl9yviu7HDR2LxYeou88i82",
+    "storage_class": "STANDARD",
+    "metadata": {},
+    "data_source": "AWS S3 head_object API (ap-southeast-2)",
+    "retrieved_at": "2026-11-17 18:44:29 UTC"
+  },
+  "/api/v1/aws/s3/metrics?days=7": {
+    "success": true,
+    "status": "SUCCESS",
+    "bucket_name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+    "days_requested": 7,
+    "has_cloudwatch_data": false,
+    "size_history": [],
+    "object_history": [],
+    "data_source": "Amazon CloudWatch Metrics API (AWS/S3 Namespace)",
+    "retrieved_at": "2026-11-17 18:44:32 UTC",
+    "notice": "S3 CloudWatch storage metrics are collected daily by AWS. An empty response is expected for fresh buckets (<24-48h of existence) and is normal operation."
+  },
+  "/api/v1/aws/s3/buckets": {
+    "success": true,
+    "owner": "AWS Account",
+    "total_buckets": 1,
+    "buckets": [
+      {
+        "name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+        "creation_date": "2026-11-17 14:21:42",
+        "is_target": true
+      }
+    ]
+  }
+}

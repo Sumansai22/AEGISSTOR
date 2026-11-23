@@ -1,0 +1,44 @@
+{
+  "status_endpoint": {
+    "success": false,
+    "connected": false,
+    "status": "EXPIRED",
+    "error": "LoginRefreshRequired",
+    "is_expired": true,
+    "checked_at": "2026-11-23 17:25:54 UTC",
+    "remedy": "aws login",
+    "message": "AWS Session Error (LoginRefreshRequired): Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.. Run 'aws login' to reauthenticate."
+  },
+  "bucket_endpoint": {
+    "success": false,
+    "bucket_name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+    "status": "EXPIRED",
+    "error": "LoginRefreshRequired",
+    "is_expired": true,
+    "remedy": "aws login",
+    "message": "AWS Session Error (LoginRefreshRequired): Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.. Run 'aws login' to reauthenticate."
+  },
+  "object_endpoint": {
+    "success": false,
+    "bucket_name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+    "key": "test-storage.txt",
+    "status": "EXPIRED",
+    "error": "LoginRefreshRequired",
+    "message": "AWS Session Error (LoginRefreshRequired): Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.. Run 'aws login' to reauthenticate.",
+    "data_source": "AWS S3 head_object API",
+    "retrieved_at": "2026-11-23 17:25:54 UTC"
+  },
+  "metrics_endpoint": {
+    "success": false,
+    "bucket_name": "aegisstor-mon-425178888081-ap-southeast-2-an",
+    "error": "Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.",
+    "size_history": [],
+    "object_history": []
+  },
+  "buckets_endpoint": {
+    "success": false,
+    "buckets": [],
+    "error": "LoginRefreshRequired",
+    "message": "AWS Session Error (LoginRefreshRequired): Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.. Run 'aws login' to reauthenticate."
+  }
+}

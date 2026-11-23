@@ -1,0 +1,21 @@
+/**
+ * Secure Preload Script for AEGISSTOR Desktop
+ */
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  platform: process.platform,
+  version: '1.0.0',
+  send: (channel, data) => {
+    const validChannels = ['toMain', 'minimize', 'maximize', 'close', 'openDevTools'];
+    if (validChannels.includes(channel)) {
+      ipcRenderer.send(channel, data);
+    }
+  },
+  receive: (channel, func) => {
+    const validChannels = ['fromMain', 'backendStatus'];
+    if (validChannels.includes(channel)) {
+      ipcRenderer.on(channel, (event, ...args) => func(...args));
+    }
+  }
+});
