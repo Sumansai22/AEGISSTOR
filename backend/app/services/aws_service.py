@@ -73,21 +73,88 @@ class AWSS3Service:
         self._bucket_cache_ttl: float = 300.0
         self._object_cache_ttl: float = 60.0
 
+ 
     def get_session(self) -> boto3.Session:
-        """Create or return cached boto3 session from AWS CLI credentials profile."""
-        if self._session is None:
-            with self._client_lock:
-                if self._session is None:
-                    try:
-                        self._session = boto3.Session(profile_name=self.profile_name, region_name=self.region_name)
-                    except ProfileNotFound:
-                        logger.error(f"[AWS Diagnostic] AWS CLI profile '{self.profile_name}' not found.")
-                        raise
-                    except Exception as e:
-                        logger.warning(f"[AWS Diagnostic] Error initializing session for profile '{self.profile_name}': {type(e).__name__}: {e}")
-                        raise
-        return self._session
+        """
+        Create a Boto3 session.
 
+        Render/production:
+            Use explicit AWS environment credentials. Never fall back to a
+            developer's local AWS CLI profile in a deployed environment.
+
+        Local development:
+            Prefer explicit environment credentials when supplied; otherwise
+            use the configured AWS CLI profile.
+        """
+        if self._session is not None:
+            return self._session
+
+        with self._client_lock:
+            if self._session is not None:
+                return self._session
+
+            access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+            secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+            session_token = os.getenv("AWS_SESSION_TOKEN", "").strip() or None
+
+            region = (
+                os.getenv("AWS_REGION")
+                or os.getenv("AWS_DEFAULT_REGION")
+                or self.region_name
+            ).strip()
+            self.region_name = region
+
+            # Do not silently use an incomplete credential pair.
+            if bool(access_key) != bool(secret_key):
+                raise NoCredentialsError()
+
+            # Explicitly pass the Render environment credentials to Boto3.
+            if access_key and secret_key:
+                logger.info(
+                    "[AWS Diagnostic] Using environment-based AWS credentials; "
+                    "credential values are not logged."
+                )
+                self._session = boto3.Session(
+                    aws_access_key_id=access_key,
+                    aws_secret_access_key=secret_key,
+                    aws_session_token=session_token,
+                    region_name=region,
+                )
+                return self._session
+
+            # A deployed service must not depend on a local Windows profile.
+            is_production = (
+                os.getenv("RENDER", "").lower() == "true"
+                or os.getenv("ENVIRONMENT", "").lower() in {
+                    "production", "prod"
+                }
+            )
+            if is_production:
+                logger.error(
+                    "[AWS Diagnostic] Production AWS credentials are missing. "
+                    "Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
+                    "in the Render service environment."
+                )
+                raise NoCredentialsError()
+
+            # Local development fallback.
+            logger.info(
+                "[AWS Diagnostic] Using local AWS CLI profile: %s",
+                self.profile_name,
+            )
+            try:
+                self._session = boto3.Session(
+                    profile_name=self.profile_name,
+                    region_name=region,
+                )
+            except ProfileNotFound:
+                logger.warning(
+                    "[AWS Diagnostic] Local AWS profile '%s' was not found.",
+                    self.profile_name,
+                )
+                raise
+
+            return self._session
     def reset_clients(self):
         """Reset cached session and clients on credential expiry or reauthentication."""
         with self._client_lock:
@@ -181,8 +248,22 @@ class AWSS3Service:
                     "status": "DISCONNECTED",
                     "error": "PROFILE_OR_CREDENTIALS_MISSING",
                     "checked_at": err_utc,
-                    "message": f"AWS CLI profile '{self.profile_name}' not configured or missing credentials: {str(e)}",
-                    "remedy": f"aws login --profile {self.profile_name}"
+                    "message": (
+                        "AWS credentials are unavailable to the backend process. "
+                        "For Render, verify AWS_ACCESS_KEY_ID and "
+                        "AWS_SECRET_ACCESS_KEY are set on the correct service, "
+                        "then redeploy. For local development, verify the "
+                        f"AWS CLI profile '{self.profile_name}'."
+                    ),
+                    "remedy": (
+                        "Configure Render environment credentials and redeploy"
+                        if (
+                            os.getenv("RENDER", "").lower() == "true"
+                            or os.getenv("ENVIRONMENT", "").lower()
+                            in {"production", "prod"}
+                        )
+                        else f"Configure AWS CLI profile {self.profile_name}"
+                    )
                 }
                 self._cached_connection = res
                 self._cached_conn_time = now
@@ -202,8 +283,8 @@ class AWSS3Service:
                     "error": code,
                     "is_expired": is_expired,
                     "checked_at": err_utc,
-                    "remedy": "aws login",
-                    "message": f"AWS Error ({code}): {msg}. Run 'aws login' to reauthenticate."
+                    "remedy": "Verify IAM permissions and credential validity.",
+                    "message": f"AWS Error ({code}): {msg}. Check the IAM policy, region, and credential validity."
                 }
                 self._cached_connection = res
                 self._cached_conn_time = now
