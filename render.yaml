@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: aegisstor-api
+    env: python
+    region: oregon
+    plan: standard
+    buildCommand: "pip install --upgrade pip && pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aegisstor-db
+          property: connectionString
+      - key: AEGISSTOR_MASTER_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: AWS_REGION
+        value: ap-southeast-2
+      - key: AWS_DEFAULT_REGION
+        value: ap-southeast-2
+
+databases:
+  - name: aegisstor-db
+    plan: standard
+    region: oregon
+    databaseName: aegisstor
+    user: aegisstor_admin

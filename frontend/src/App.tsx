@@ -413,6 +413,7 @@ export const App: React.FC = () => {
               <HistoricalReports
                 historyData={historyData}
                 onTimeRangeChange={(hrs) => fetchHistory(hrs).then(setHistoryData)}
+                drives={storage?.drives || []}
               />
             )}
 

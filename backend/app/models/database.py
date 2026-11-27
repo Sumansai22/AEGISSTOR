@@ -147,6 +147,34 @@ class HistoricalStorageTelemetry(Base):
         Index("idx_hist_resource_time", "resource_id", "timestamp"),
     )
 
+class HistoricalTelemetry(Base):
+    """
+    Unified Historical Telemetry model for AEGISSTOR Enterprise.
+    Stores comprehensive point-in-time snapshots of storage capacity,
+    disk throughput, and host CPU/RAM performance.
+    """
+    __tablename__ = "historical_telemetry"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    org_id = Column(Integer, index=True, default=1)
+    timestamp_utc = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    device_id = Column(String(100), index=True, nullable=False)
+    total_storage_gb = Column(Float, nullable=False)
+    used_storage_gb = Column(Float, nullable=False)
+    free_storage_gb = Column(Float, nullable=False)
+    utilization_percent = Column(Float, nullable=False)
+    cpu_percent = Column(Float, default=0.0)
+    ram_percent = Column(Float, default=0.0)
+    ram_used_gb = Column(Float, default=0.0)
+    ram_available_gb = Column(Float, default=0.0)
+    disk_read_mb_s = Column(Float, default=0.0)
+    disk_write_mb_s = Column(Float, default=0.0)
+    collection_status = Column(String(50), default="VERIFIED")
+
+    __table_args__ = (
+        Index("idx_hist_telemetry_device_time", "device_id", "timestamp_utc"),
+    )
+
 class PerformanceTelemetry(Base):
     __tablename__ = "performance_telemetry"
 
@@ -267,8 +295,70 @@ class PrivacyPolicy(Base):
     retention_days = Column(Integer, default=30)
     enforce_tenant_isolation = Column(Boolean, default=True)
     credential_encryption_active = Column(Boolean, default=True)
+    detect_sensitive_data = Column(Boolean, default=True)
+    sensitive_detection_categories = Column(String(255), default="EMAIL,PHONE,IP,CREDENTIAL,AWS_KEY,TOKEN")
+    auto_mask_telemetry = Column(Boolean, default=True)
     audit_level = Column(String(50), default="DETAILED")
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    event_id = Column(String(100), unique=True, index=True, nullable=False)
+    org_id = Column(Integer, index=True, default=1)
+    timestamp_utc = Column(DateTime, default=datetime.utcnow, index=True)
+    event_type = Column(String(100), index=True)  # AUTH_SUCCESS, AUTH_FAILURE, PERMISSION_DENIED, UNAUTHORIZED_ACCESS, CONFIG_CHANGE, AWS_AUTH_FAILURE, SENSITIVE_ACCESS, SECURITY_SCAN
+    severity = Column(String(20), default="INFO", index=True)  # INFO, LOW, MEDIUM, HIGH, CRITICAL
+    action = Column(String(100))
+    result = Column(String(30))  # SUCCESS, FAILED, DENIED, BLOCKED, FLAGGED
+    user_identifier = Column(String(255), default="system")
+    resource_identifier = Column(String(255), nullable=True)
+    safe_metadata_json = Column(Text, default="{}")
+
+class SecurityScanResult(Base):
+    __tablename__ = "security_scan_results"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    scan_id = Column(String(100), unique=True, index=True, nullable=False)
+    org_id = Column(Integer, index=True, default=1)
+    timestamp_utc = Column(DateTime, default=datetime.utcnow, index=True)
+    overall_status = Column(String(30), default="PASSED")  # PASSED, WARNING, FAILED
+    overall_score = Column(Float, default=100.0)
+    total_checks = Column(Integer, default=0)
+    passed_checks = Column(Integer, default=0)
+    warning_checks = Column(Integer, default=0)
+    failed_checks = Column(Integer, default=0)
+    findings_json = Column(Text, default="[]")
+    duration_sec = Column(Float, default=0.0)
+
+class PrivacyEvent(Base):
+    __tablename__ = "privacy_events"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    event_id = Column(String(100), unique=True, index=True, nullable=False)
+    org_id = Column(Integer, index=True, default=1)
+    timestamp_utc = Column(DateTime, default=datetime.utcnow, index=True)
+    event_type = Column(String(100), index=True)  # PRIVACY_SCAN, POLICY_UPDATE, RETENTION_PURGE, MASKING_EVENT, SENSITIVE_DATA_DETECTED
+    severity = Column(String(20), default="INFO", index=True)  # INFO, LOW, MEDIUM, HIGH
+    action = Column(String(100))
+    result = Column(String(30))  # SUCCESS, COMPLIANT, FLAGGED
+    user_identifier = Column(String(255), default="system")
+    resource_identifier = Column(String(255), nullable=True)
+    safe_metadata_json = Column(Text, default="{}")
+
+class PrivacyScanResult(Base):
+    __tablename__ = "privacy_scan_results"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    scan_id = Column(String(100), unique=True, index=True, nullable=False)
+    org_id = Column(Integer, index=True, default=1)
+    timestamp_utc = Column(DateTime, default=datetime.utcnow, index=True)
+    status = Column(String(30), default="CLEAN")  # CLEAN, FLAGGED, COMPLETED
+    total_inspected = Column(Integer, default=0)
+    sensitive_findings_count = Column(Integer, default=0)
+    findings_json = Column(Text, default="[]")
+    duration_sec = Column(Float, default=0.0)
 
 class ApplicationSetting(Base):
     __tablename__ = "application_settings"

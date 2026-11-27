@@ -517,4 +517,144 @@ export interface SystemAnnouncementItem {
   created_at: string;
 }
 
+export interface HistoricalStoragePoint {
+  timestamp: string;
+  device_id: string;
+  total_storage_gb: number;
+  used_storage_gb: number;
+  free_storage_gb: number;
+  utilization_percent: number;
+}
+
+export interface HistoricalPerformancePoint {
+  timestamp: string;
+  cpu_percent: number;
+  ram_percent: number;
+  ram_used_gb: number;
+  ram_available_gb: number;
+}
+
+export interface HistoricalDiskIOPoint {
+  timestamp: string;
+  device_id: string;
+  disk_read_mb_s: number;
+  disk_write_mb_s: number;
+}
+
+export interface HistoricalReportSummary {
+  total_storage_gb: number;
+  average_used_storage_gb: number;
+  maximum_used_storage_gb: number;
+  average_utilization_percent: number;
+  average_cpu_percent: number;
+  average_ram_percent: number;
+}
+
+export interface HistoricalReportResponse {
+  success: boolean;
+  data_available: boolean;
+  range: string;
+  summary?: HistoricalReportSummary;
+  storage_history?: HistoricalStoragePoint[];
+  performance_history?: HistoricalPerformancePoint[];
+  disk_io_history?: HistoricalDiskIOPoint[];
+  record_count: number;
+  generated_at?: string;
+  message?: string;
+}
+
+// Security Center & Privacy Guard Subsystem Types
+
+export interface SecurityCheckResult {
+  id: string;
+  category: string;
+  name: string;
+  status: "PASS" | "WARNING" | "FAILED" | "UNKNOWN";
+  severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  details: string;
+  remediation: string;
+}
+
+export interface SecurityEventItem {
+  id: number;
+  event_id: string;
+  timestamp_utc: string;
+  event_type: string;
+  severity: string;
+  action: string;
+  result: string;
+  user_identifier?: string;
+  resource_identifier?: string;
+  metadata?: any;
+}
+
+export interface SecurityDashboardData {
+  success: boolean;
+  overall_status: string;
+  security_score: number;
+  active_alerts_count: number;
+  failed_login_attempts: number;
+  total_users: number;
+  mfa_active_users: number;
+  audit_records_total: number;
+  latest_scan: {
+    scan_id: string;
+    timestamp_utc: string;
+    overall_status: string;
+    overall_score: number;
+    total_checks: number;
+    passed_checks: number;
+    warning_checks: number;
+    failed_checks: number;
+    checks: SecurityCheckResult[];
+    duration_sec: number;
+  };
+  recent_events: SecurityEventItem[];
+  last_verification_utc: string;
+}
+
+export interface SensitiveFindingItem {
+  category: string;
+  severity: string;
+  masked_value: string;
+  location: string;
+  recommendation: string;
+}
+
+export interface PrivacyDashboardData {
+  success: boolean;
+  privacy_protection_status: string;
+  sensitive_data_detection_status: string;
+  data_masking_status: string;
+  credential_exposure_status: string;
+  encryption_status: string;
+  data_retention_status: string;
+  access_control_status: string;
+  active_privacy_alerts: number;
+  policy: {
+    data_minimization_mode: boolean;
+    mask_identifiers: boolean;
+    retention_days: number;
+    enforce_tenant_isolation: boolean;
+    detect_sensitive_data: boolean;
+    auto_mask_telemetry: boolean;
+    sensitive_detection_categories: string;
+    audit_level: string;
+    status: string;
+  };
+  latest_scan: {
+    scan_id: string;
+    timestamp_utc: string;
+    status: string;
+    total_inspected: number;
+    sensitive_findings_count: number;
+    findings: SensitiveFindingItem[];
+    duration_sec: number;
+    disclaimer?: string;
+  };
+  recent_events: any[];
+  last_verification_utc: string;
+}
+
+
 

@@ -40,6 +40,7 @@ from app.collectors.database_collector import database_collector
 from app.connectors.factory import get_connector
 from app.ml.engine import ml_engine
 from app.privacy.guard import privacy_guard
+from app.security.service import security_service
 
 api_v1 = APIRouter()
 
@@ -70,7 +71,8 @@ class MFASetupResponse(BaseModel):
     provisioning_uri: str
 
 class MFAVerifyRequest(BaseModel):
-    code: str
+    code: Optional[str] = None
+    totp_code: Optional[str] = None
 
 class DatabaseConnectionCreate(BaseModel):
     name: str
@@ -337,17 +339,53 @@ def setup_mfa(user_token: dict = Depends(get_current_user_token), db: Session = 
     return {"secret": secret, "provisioning_uri": uri}
 
 @api_v1.post("/auth/mfa/enable")
+@api_v1.post("/auth/mfa/verify")
 def enable_mfa(payload: MFAVerifyRequest, user_token: dict = Depends(get_current_user_token), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_token["user_id"]).first()
     if not user or not user.mfa_secret:
         raise HTTPException(status_code=400, detail="MFA setup has not been initiated.")
 
-    if not verify_totp_code(user.mfa_secret, payload.code):
+    token_code = payload.totp_code or payload.code
+    if not token_code:
+        raise HTTPException(status_code=400, detail="Missing TOTP verification code.")
+
+    if not verify_totp_code(user.mfa_secret, token_code):
+        security_service.record_security_event(
+            event_type="AUTH_FAILURE",
+            action="MFA_VERIFY",
+            result="FAILED",
+            severity="HIGH",
+            user_identifier=user.email,
+            org_id=user.org_id
+        )
         raise HTTPException(status_code=400, detail="Invalid verification code. Could not verify TOTP token.")
 
     user.mfa_enabled = True
     db.commit()
-    return {"status": "SUCCESS", "message": "Multi-Factor Authentication enabled successfully."}
+
+    security_service.record_security_event(
+        event_type="AUTH_SUCCESS",
+        action="MFA_ACTIVATED",
+        result="SUCCESS",
+        severity="INFO",
+        user_identifier=user.email,
+        org_id=user.org_id
+    )
+    return {"status": "SUCCESS", "message": "Multi-Factor Authentication verified and enabled successfully."}
+
+@api_v1.post("/auth/logout")
+def logout_user(user_token: dict = Depends(get_current_user_token)):
+    jti = user_token.get("jti")
+    if jti:
+        revoke_token(jti)
+    security_service.record_security_event(
+        event_type="AUTH_LOGOUT",
+        action="USER_LOGOUT",
+        result="SUCCESS",
+        user_identifier=user_token.get("email", "unknown"),
+        org_id=user_token.get("org_id", 1)
+    )
+    return {"status": "SUCCESS", "message": "User session terminated and token revoked successfully."}
 
 @api_v1.get("/auth/me")
 def get_current_profile(user_token: dict = Depends(get_current_user_token), db: Session = Depends(get_db)):
@@ -885,42 +923,184 @@ def get_detected_anomalies(user_token: dict = Depends(get_current_user_token), d
 # 8. PRIVACY GUARD & SECURITY AUDITING (/api/v1/privacy & /api/v1/security)
 # =========================================================================
 
-@api_v1.get("/privacy/policy")
-def get_privacy_policy(user_token: dict = Depends(get_current_user_token)):
-    return privacy_guard.get_policy(org_id=user_token["org_id"])
+# --- Security Center Endpoints ---
 
-@api_v1.post("/privacy/policy")
-def update_privacy_policy(
-    updates: Dict[str, Any],
-    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN]))
-):
-    return privacy_guard.update_policy(org_id=user_token["org_id"], updates=updates)
+@api_v1.get("/security/status")
+@api_v1.get("/security/dashboard")
+def get_security_dashboard(user_token: dict = Depends(get_current_user_token)):
+    """Retrieve comprehensive security posture, metrics, active alerts, and latest scan."""
+    return security_service.get_security_dashboard(org_id=user_token["org_id"])
 
-@api_v1.post("/privacy/purge-retention")
-def trigger_retention_purge(
-    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN]))
+@api_v1.get("/security/checks")
+def get_security_checks(user_token: dict = Depends(get_current_user_token)):
+    """Retrieve results of all 10 verified security checks."""
+    return security_service.get_security_checks()
+
+@api_v1.post("/security/checks/run")
+@api_v1.post("/security/scan")
+def run_security_scan(user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DATABASE_ADMIN]))):
+    """Trigger live enterprise security assessment, persist results, and record security event."""
+    return security_service.run_security_scan(org_id=user_token["org_id"])
+
+@api_v1.get("/security/events")
+def get_security_events(
+    event_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 50,
+    user_token: dict = Depends(get_current_user_token)
 ):
-    return privacy_guard.enforce_retention_purge(org_id=user_token["org_id"])
+    """Retrieve security events history with optional type/severity filters."""
+    return security_service.get_security_events(
+        event_type=event_type,
+        severity=severity,
+        limit=limit,
+        org_id=user_token["org_id"]
+    )
+
+@api_v1.get("/security/alerts")
+def get_security_alerts(user_token: dict = Depends(get_current_user_token)):
+    """Retrieve active security alerts based on high/critical events and scan findings."""
+    dash = security_service.get_security_dashboard(org_id=user_token["org_id"])
+    return {
+        "active_alerts_count": dash.get("active_alerts_count", 0),
+        "overall_status": dash.get("overall_status"),
+        "failed_checks": [c for c in dash.get("latest_scan", {}).get("checks", []) if c.get("status") in ("FAILED", "WARNING")],
+        "recent_critical_events": [e for e in dash.get("recent_events", []) if e.get("severity") in ("HIGH", "CRITICAL")]
+    }
 
 @api_v1.get("/security/audit-logs")
 def get_audit_trail(
+    search: Optional[str] = None,
+    severity: Optional[str] = None,
+    action_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     limit: int = 50,
-    user_token: dict = Depends(get_current_user_token),
-    db: Session = Depends(get_db)
+    offset: int = 0,
+    user_token: dict = Depends(get_current_user_token)
 ):
-    logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
-    return [
-        {
-            "id": l.id,
-            "timestamp": l.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-            "user_email": l.user_email,
-            "action_type": l.action_type,
-            "resource": l.resource,
-            "description": l.description,
-            "status": l.status
-        }
-        for l in logs
-    ]
+    """Search and filter tamper-evident audit logs with pagination."""
+    res = security_service.get_audit_logs(
+        search=search,
+        severity=severity,
+        action_type=action_type,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+        org_id=user_token["org_id"]
+    )
+    # Maintain backward compatibility for arrays if no pagination was requested
+    if search is None and severity is None and action_type is None and start_date is None and end_date is None and offset == 0:
+        return res["items"]
+    return res
+
+@api_v1.get("/security/audit-logs/export")
+def export_audit_logs_csv(
+    search: Optional[str] = None,
+    severity: Optional[str] = None,
+    action_type: Optional[str] = None,
+    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DATABASE_ADMIN]))
+):
+    """Export filtered audit logs as RFC 4180 CSV."""
+    import csv
+    import io
+    from fastapi.responses import Response
+
+    data = security_service.get_audit_logs(
+        search=search,
+        severity=severity,
+        action_type=action_type,
+        limit=1000,
+        org_id=user_token["org_id"]
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Timestamp UTC", "Action Type", "User Email", "Resource", "Description", "Status", "Request ID"])
+    for item in data.get("items", []):
+        writer.writerow([
+            item.get("id"),
+            item.get("timestamp"),
+            item.get("action_type"),
+            item.get("user_email"),
+            item.get("resource"),
+            item.get("description"),
+            item.get("status"),
+            item.get("request_id")
+        ])
+    
+    csv_bytes = output.getvalue().encode("utf-8")
+    filename = f"aegisstor_audit_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
+    )
+
+# --- Privacy Guard Endpoints ---
+
+@api_v1.get("/privacy/status")
+@api_v1.get("/privacy/dashboard")
+def get_privacy_dashboard(user_token: dict = Depends(get_current_user_token)):
+    """Retrieve real-time privacy status, sensitive data detection status, and latest privacy scan."""
+    return privacy_guard.get_privacy_dashboard(org_id=user_token["org_id"])
+
+@api_v1.get("/privacy/settings")
+@api_v1.get("/privacy/policy")
+def get_privacy_settings(user_token: dict = Depends(get_current_user_token)):
+    """Retrieve active privacy and retention policy settings."""
+    return privacy_guard.get_policy(org_id=user_token["org_id"])
+
+@api_v1.put("/privacy/settings")
+@api_v1.post("/privacy/settings")
+@api_v1.post("/privacy/policy")
+def update_privacy_settings(
+    updates: Dict[str, Any],
+    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update privacy settings and data lifecycle configuration."""
+    return privacy_guard.update_policy(org_id=user_token["org_id"], updates=updates)
+
+@api_v1.post("/privacy/scan")
+def trigger_privacy_scan(
+    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DATABASE_ADMIN]))
+):
+    """Trigger sensitive data and compliance scan across permitted metadata targets."""
+    return privacy_guard.start_privacy_scan(org_id=user_token["org_id"])
+
+@api_v1.get("/privacy/scan-history")
+def get_privacy_scan_history(
+    limit: int = 20,
+    user_token: dict = Depends(get_current_user_token)
+):
+    """Retrieve privacy scan history."""
+    return privacy_guard.get_privacy_scan_history(limit=limit, org_id=user_token["org_id"])
+
+@api_v1.get("/privacy/events")
+def get_privacy_events(
+    limit: int = 50,
+    user_token: dict = Depends(get_current_user_token)
+):
+    """Retrieve privacy lifecycle events."""
+    return privacy_guard.get_privacy_events(limit=limit, org_id=user_token["org_id"])
+
+@api_v1.get("/privacy/retention/preview")
+@api_v1.post("/privacy/retention/preview")
+def preview_retention_purge(
+    retention_days: Optional[int] = None,
+    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Preview records affected by retention cutoff without destructive modification."""
+    return privacy_guard.preview_retention_purge(retention_days=retention_days, org_id=user_token["org_id"])
+
+@api_v1.post("/privacy/purge")
+@api_v1.post("/privacy/purge-retention")
+def trigger_retention_purge(
+    retention_days: Optional[int] = None,
+    user_token: dict = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Execute authorized data retention purge."""
+    return privacy_guard.enforce_retention_purge(retention_days=retention_days, org_id=user_token["org_id"])
 
 # =========================================================================
 # 9. DIGITAL TWIN SIMULATION (/api/v1/simulation)
@@ -1080,6 +1260,26 @@ def get_historical_telemetry_series(
 ):
     """Retrieve verified historical telemetry time-series points."""
     return historical_pipeline.get_resource_history(resource_id=resource_id, hours=hours, org_id=user_token.get("org_id", 1))
+
+@api_v1.get("/reports/historical")
+def get_v1_historical_reports(
+    range: str = "24h",
+    device_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    interval: Optional[str] = None,
+    user_token: Optional[dict] = None
+):
+    """Retrieve structured historical telemetry report with aggregation and summary math."""
+    org_id = user_token.get("org_id", 1) if user_token else 1
+    return historical_pipeline.get_historical_report(
+        range_str=range,
+        device_id=device_id,
+        start_date=start_date,
+        end_date=end_date,
+        interval=interval,
+        org_id=org_id
+    )
 
 @api_v1.post("/telemetry/collect-sample")
 def trigger_telemetry_sample(user_token: dict = Depends(get_current_user_token)):

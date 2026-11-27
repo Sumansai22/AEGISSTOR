@@ -1,13 +1,14 @@
 """
 JWT Authentication Tokens (Access & Refresh with JTI Rotation & Revocation)
 """
+import os
 import uuid
 import time
 import jwt
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Set
 
-JWT_SECRET_KEY = "AEGISSTOR_ENTERPRISE_INTERNAL_JWT_SECRET_KEY_PROD_2026"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "AEGISSTOR_ENTERPRISE_INTERNAL_JWT_SECRET_KEY_PROD_2026")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7

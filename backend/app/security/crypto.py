@@ -19,8 +19,17 @@ _GCM_PREFIX = "aes256gcm:"
 def _get_or_create_master_key() -> bytes:
     """
     Retrieve or initialize the persistent 256-bit master cryptographic key.
-    Stored securely in local sovereign data folder with strict filesystem permissions.
+    Checks environment variable AEGISSTOR_MASTER_KEY or SECRET_KEY first for cloud deployments (e.g. Render),
+    falling back to local persistent sovereign key file.
     """
+    env_key = os.environ.get("AEGISSTOR_MASTER_KEY") or os.environ.get("SECRET_KEY")
+    if env_key:
+        encoded = env_key.strip().encode("utf-8")
+        if len(encoded) in (32, 44):
+            return encoded
+        import hashlib
+        return base64.urlsafe_b64encode(hashlib.sha256(encoded).digest())
+
     _KEY_DIR.mkdir(parents=True, exist_ok=True)
     if _SECRET_KEY_FILE.exists():
         with open(_SECRET_KEY_FILE, "rb") as f:

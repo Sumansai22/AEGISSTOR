@@ -7,14 +7,14 @@ import psutil
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Response
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db, SessionLocal
 from app.models.database import (
     StorageTelemetry, PerformanceTelemetry, ScanResult,
     RiskAlert, OptimizationRecommendation, SimulationResult,
-    ApplicationSetting, AuditLog
+    ApplicationSetting, AuditLog, HistoricalTelemetry
 )
 from app.services.storage_monitor import storage_monitor
 from app.services.performance_monitor import performance_monitor
@@ -23,6 +23,7 @@ from app.services.forecasting_service import forecasting_service
 from app.services.risk_engine import risk_engine
 from app.services.optimization_engine import optimization_engine
 from app.services.digital_twin import digital_twin_service
+from app.services.historical_pipeline import historical_pipeline
 from app.schemas.all_schemas import (
     DriveInfo, StorageSummary, DiskIOStats, PerformanceCurrent,
     ScanRequest, ScanSummary, ForecastResponse, RiskSummary,
@@ -274,26 +275,122 @@ def run_digital_twin_simulation(payload: SimulationRequest):
 
 # --- Historical Reports & Telemetry Endpoints ---
 
-@router.get("/history")
-def get_history(hours: int = 24, db: Session = Depends(get_db)):
-    since = datetime.utcnow() - timedelta(hours=hours)
-    records = (
-        db.query(StorageTelemetry)
-        .filter(StorageTelemetry.timestamp >= since)
-        .order_by(StorageTelemetry.timestamp.asc())
-        .limit(200)
-        .all()
+@router.get("/reports/historical")
+def get_historical_reports(
+    range: str = "24h",
+    device_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    interval: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Unified Historical Telemetry Report endpoint.
+    Retrieves real persisted telemetry with intelligent aggregation,
+    time-window filtering, device filtering, and KPI summaries.
+    """
+    try:
+        report = historical_pipeline.get_historical_report(
+            range_str=range,
+            device_id=device_id,
+            start_date=start_date,
+            end_date=end_date,
+            interval=interval,
+            org_id=1
+        )
+        return report
+    except Exception as e:
+        return {
+            "success": False,
+            "data_available": False,
+            "range": range,
+            "record_count": 0,
+            "message": f"Historical telemetry reporting error: {str(e)}"
+        }
+
+@router.get("/reports/historical/csv")
+def export_historical_report_csv(
+    range: str = "24h",
+    device_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Export authentic retrieved historical telemetry records as CSV."""
+    import io
+    import csv
+    report = historical_pipeline.get_historical_report(
+        range_str=range,
+        device_id=device_id,
+        start_date=start_date,
+        end_date=end_date,
+        interval="raw",
+        org_id=1
     )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Timestamp_UTC", "Device_ID", "Total_Storage_GB", "Used_Storage_GB",
+        "Free_Storage_GB", "Utilization_Percent", "CPU_Percent", "RAM_Percent",
+        "RAM_Used_GB", "RAM_Available_GB", "Disk_Read_MB_s", "Disk_Write_MB_s"
+    ])
+
+    records = report.get("storage_history", [])
+    perf_map = {p["timestamp"]: p for p in report.get("performance_history", [])}
+    io_map = {f"{i['timestamp']}_{i.get('device_id')}": i for i in report.get("disk_io_history", [])}
+
+    for s in records:
+        ts = s.get("timestamp")
+        dev = s.get("device_id")
+        p = perf_map.get(ts, {})
+        io_entry = io_map.get(f"{ts}_{dev}", {})
+        writer.writerow([
+            ts,
+            dev,
+            s.get("total_storage_gb"),
+            s.get("used_storage_gb"),
+            s.get("free_storage_gb"),
+            s.get("utilization_percent"),
+            p.get("cpu_percent", 0.0),
+            p.get("ram_percent", 0.0),
+            p.get("ram_used_gb", 0.0),
+            p.get("ram_available_gb", 0.0),
+            io_entry.get("disk_read_mb_s", 0.0),
+            io_entry.get("disk_write_mb_s", 0.0)
+        ])
+
+    filename = f"AEGISSTOR_historical_report_{range}.csv"
+    return Response(
+        content=output.getvalue().encode("utf-8"),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@router.get("/history")
+def get_history(hours: int = 24, drive: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Chronological historical storage telemetry series with valid ISO timestamps and downsampling.
+    Preserves backwards compatibility with legacy frontend callers.
+    """
+    range_str = f"{hours}h" if hours in [1, 24] else ("7d" if hours <= 168 else ("30d" if hours <= 720 else "90d"))
+    report = historical_pipeline.get_historical_report(range_str=range_str, device_id=drive)
+    if not report.get("data_available"):
+        return []
+
     result = []
-    for r in records:
+    io_map = {f"{i['timestamp']}_{i.get('device_id')}": i for i in report.get("disk_io_history", [])}
+    for s in report.get("storage_history", []):
+        ts = s.get("timestamp")
+        dev = s.get("device_id")
+        io_entry = io_map.get(f"{ts}_{dev}", {})
         result.append({
-            "timestamp": r.timestamp.strftime("%H:%M:%S"),
-            "drive": r.drive_name,
-            "used_gb": round(r.used_bytes / (1024 ** 3), 2),
-            "free_gb": round(r.free_bytes / (1024 ** 3), 2),
-            "usage_percent": r.usage_percent,
-            "read_mb_s": round(r.read_bytes_sec / (1024 * 1024), 2),
-            "write_mb_s": round(r.write_bytes_sec / (1024 * 1024), 2)
+            "timestamp": ts,
+            "drive": dev,
+            "used_gb": s.get("used_storage_gb"),
+            "free_gb": s.get("free_storage_gb"),
+            "usage_percent": s.get("utilization_percent"),
+            "read_mb_s": io_entry.get("disk_read_mb_s", 0.0),
+            "write_mb_s": io_entry.get("disk_write_mb_s", 0.0)
         })
     return result
 
@@ -335,3 +432,73 @@ def get_audit_logs(limit: int = 50, db: Session = Depends(get_db)):
         }
         for l in logs
     ]
+
+# --- Security Center & Privacy Guard Routes (/api/security & /api/privacy) ---
+from app.security.service import security_service
+from app.privacy.guard import privacy_guard
+
+@router.get("/security/status")
+@router.get("/security/dashboard")
+def legacy_security_dashboard():
+    return security_service.get_security_dashboard(org_id=1)
+
+@router.get("/security/checks")
+def legacy_security_checks():
+    return security_service.get_security_checks()
+
+@router.post("/security/checks/run")
+@router.post("/security/scan")
+def legacy_run_security_scan():
+    return security_service.run_security_scan(org_id=1)
+
+@router.get("/security/events")
+def legacy_security_events(event_type: str = "ALL", severity: str = "ALL", limit: int = 50):
+    return security_service.get_security_events(event_type=event_type, severity=severity, limit=limit, org_id=1)
+
+@router.get("/security/alerts")
+def legacy_security_alerts():
+    dash = security_service.get_security_dashboard(org_id=1)
+    return {
+        "active_alerts_count": dash.get("active_alerts_count", 0),
+        "overall_status": dash.get("overall_status"),
+        "failed_checks": [c for c in dash.get("latest_scan", {}).get("checks", []) if c.get("status") in ("FAILED", "WARNING")],
+        "recent_critical_events": [e for e in dash.get("recent_events", []) if e.get("severity") in ("HIGH", "CRITICAL")]
+    }
+
+@router.get("/privacy/status")
+@router.get("/privacy/dashboard")
+def legacy_privacy_dashboard():
+    return privacy_guard.get_privacy_dashboard(org_id=1)
+
+@router.get("/privacy/settings")
+@router.get("/privacy/policy")
+def legacy_privacy_settings():
+    return privacy_guard.get_policy(org_id=1)
+
+@router.put("/privacy/settings")
+@router.post("/privacy/settings")
+@router.post("/privacy/policy")
+def legacy_update_privacy_settings(updates: dict):
+    return privacy_guard.update_policy(org_id=1, updates=updates)
+
+@router.post("/privacy/scan")
+def legacy_trigger_privacy_scan():
+    return privacy_guard.start_privacy_scan(org_id=1)
+
+@router.get("/privacy/scan-history")
+def legacy_privacy_scan_history(limit: int = 20):
+    return privacy_guard.get_privacy_scan_history(limit=limit, org_id=1)
+
+@router.get("/privacy/events")
+def legacy_privacy_events(limit: int = 50):
+    return privacy_guard.get_privacy_events(limit=limit, org_id=1)
+
+@router.get("/privacy/retention/preview")
+@router.post("/privacy/retention/preview")
+def legacy_preview_retention_purge(retention_days: int = None):
+    return privacy_guard.preview_retention_purge(retention_days=retention_days, org_id=1)
+
+@router.post("/privacy/purge")
+@router.post("/privacy/purge-retention")
+def legacy_trigger_retention_purge(retention_days: int = None):
+    return privacy_guard.enforce_retention_purge(retention_days=retention_days, org_id=1)

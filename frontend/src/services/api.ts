@@ -13,7 +13,8 @@ import {
   SimulationResult,
   AuditLogItem,
   BackendHealthStatus,
-  AWSConnectionStatus
+  AWSConnectionStatus,
+  HistoricalReportResponse
 } from "../types";
 
 const DEFAULT_BACKEND_ORIGIN = "http://127.0.0.1:8000";
@@ -174,6 +175,43 @@ export async function fetchHistory(hours: number = 24): Promise<any[]> {
   return res.json();
 }
 
+export async function fetchHistoricalReport(params: {
+  range?: string;
+  deviceId?: string;
+  startDate?: string;
+  endDate?: string;
+  interval?: string;
+  signal?: AbortSignal;
+} = {}): Promise<HistoricalReportResponse> {
+  const query = new URLSearchParams();
+  if (params.range) query.set("range", params.range);
+  if (params.deviceId) query.set("device_id", params.deviceId);
+  if (params.startDate) query.set("start_date", params.startDate);
+  if (params.endDate) query.set("end_date", params.endDate);
+  if (params.interval) query.set("interval", params.interval);
+
+  const url = `${API_BASE}/reports/historical${query.toString() ? `?${query.toString()}` : ""}`;
+  const res = await fetch(url, { signal: params.signal });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch historical report: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export function getHistoricalCsvExportUrl(params: {
+  range?: string;
+  deviceId?: string;
+  startDate?: string;
+  endDate?: string;
+} = {}): string {
+  const query = new URLSearchParams();
+  if (params.range) query.set("range", params.range);
+  if (params.deviceId) query.set("device_id", params.deviceId);
+  if (params.startDate) query.set("start_date", params.startDate);
+  if (params.endDate) query.set("end_date", params.endDate);
+  return `${API_BASE}/reports/historical/csv${query.toString() ? `?${query.toString()}` : ""}`;
+}
+
 export async function fetchSettings(): Promise<Record<string, string>> {
   const res = await fetch(`${API_BASE}/settings`);
   return res.json();
@@ -188,8 +226,110 @@ export async function updateSettings(settings: Record<string, string>): Promise<
   return res.json();
 }
 
-export async function fetchAuditLogs(limit: number = 50): Promise<AuditLogItem[]> {
-  const res = await fetch(`${API_BASE}/audit-logs?limit=${limit}`);
+export async function fetchAuditLogs(limitOrOptions: number | {
+  search?: string;
+  severity?: string;
+  action_type?: string;
+  limit?: number;
+  offset?: number;
+} = 50): Promise<any> {
+  let query = "";
+  if (typeof limitOrOptions === "number") {
+    query = `limit=${limitOrOptions}`;
+  } else {
+    const params = new URLSearchParams();
+    if (limitOrOptions.search) params.append("search", limitOrOptions.search);
+    if (limitOrOptions.severity && limitOrOptions.severity !== "ALL") params.append("severity", limitOrOptions.severity);
+    if (limitOrOptions.action_type && limitOrOptions.action_type !== "ALL") params.append("action_type", limitOrOptions.action_type);
+    if (limitOrOptions.limit) params.append("limit", limitOrOptions.limit.toString());
+    if (limitOrOptions.offset) params.append("offset", limitOrOptions.offset.toString());
+    query = params.toString();
+  }
+  const res = await fetch(`${API_V1}/security/audit-logs?${query}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) {
+    // Fallback to legacy endpoint if v1 has issues
+    const fallbackRes = await fetch(`${API_BASE}/audit-logs?limit=50`);
+    return fallbackRes.json();
+  }
+  const data = await res.json();
+  return data;
+}
+
+export async function downloadAuditLogsCsv(options: {
+  search?: string;
+  severity?: string;
+  action_type?: string;
+} = {}): Promise<void> {
+  const params = new URLSearchParams();
+  if (options.search) params.append("search", options.search);
+  if (options.severity && options.severity !== "ALL") params.append("severity", options.severity);
+  if (options.action_type && options.action_type !== "ALL") params.append("action_type", options.action_type);
+
+  const res = await fetch(`${API_V1}/security/audit-logs/export?${params.toString()}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to export audit logs");
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `aegisstor_audit_logs_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+}
+
+// Security Center Endpoints
+export async function fetchSecurityDashboard(): Promise<any> {
+  const res = await fetch(`${API_V1}/security/dashboard`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to load security dashboard");
+  return res.json();
+}
+
+export async function fetchSecurityChecks(): Promise<any[]> {
+  const res = await fetch(`${API_V1}/security/checks`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to load security checks");
+  return res.json();
+}
+
+export async function runSecurityScan(): Promise<any> {
+  const res = await fetch(`${API_V1}/security/checks/run`, {
+    method: "POST",
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to run security scan");
+  return res.json();
+}
+
+export async function fetchSecurityEvents(
+  eventType?: string,
+  severity?: string,
+  limit: number = 50
+): Promise<any[]> {
+  const params = new URLSearchParams();
+  if (eventType && eventType !== "ALL") params.append("event_type", eventType);
+  if (severity && severity !== "ALL") params.append("severity", severity);
+  params.append("limit", limit.toString());
+
+  const res = await fetch(`${API_V1}/security/events?${params.toString()}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to fetch security events");
+  return res.json();
+}
+
+export async function fetchSecurityAlerts(): Promise<any> {
+  const res = await fetch(`${API_V1}/security/alerts`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to fetch security alerts");
   return res.json();
 }
 
@@ -371,8 +511,16 @@ export async function acknowledgeAnomaly(anomalyId: number): Promise<any> {
 }
 
 // Privacy Guard
+export async function fetchPrivacyDashboard(): Promise<any> {
+  const res = await fetch(`${API_V1}/privacy/dashboard`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to load privacy dashboard");
+  return res.json();
+}
+
 export async function fetchPrivacyPolicy(): Promise<any> {
-  const res = await fetch(`${API_V1}/privacy/policy`, {
+  const res = await fetch(`${API_V1}/privacy/settings`, {
     headers: getAuthHeaders()
   });
   if (!res.ok) throw new Error("Failed to load privacy policy");
@@ -380,24 +528,66 @@ export async function fetchPrivacyPolicy(): Promise<any> {
 }
 
 export async function updatePrivacyPolicy(policy: {
-  data_minimization_mode: boolean;
-  mask_identifiers: boolean;
-  retention_days: number;
-  enforce_tenant_isolation: boolean;
+  data_minimization_mode?: boolean;
+  mask_identifiers?: boolean;
+  retention_days?: number;
+  enforce_tenant_isolation?: boolean;
+  detect_sensitive_data?: boolean;
+  auto_mask_telemetry?: boolean;
+  sensitive_detection_categories?: string;
+  audit_level?: string;
 }): Promise<any> {
-  const res = await fetch(`${API_V1}/privacy/policy`, {
+  const res = await fetch(`${API_V1}/privacy/settings`, {
     method: "POST",
     headers: getAuthHeaders(),
     body: JSON.stringify(policy)
   });
+  if (!res.ok) throw new Error("Failed to update privacy policy");
   return res.json();
 }
 
-export async function triggerRetentionPurge(): Promise<any> {
-  const res = await fetch(`${API_V1}/privacy/purge`, {
+export async function startPrivacyScan(): Promise<any> {
+  const res = await fetch(`${API_V1}/privacy/scan`, {
     method: "POST",
     headers: getAuthHeaders()
   });
+  if (!res.ok) throw new Error("Failed to execute privacy scan");
+  return res.json();
+}
+
+export async function fetchPrivacyScanHistory(limit: number = 20): Promise<any[]> {
+  const res = await fetch(`${API_V1}/privacy/scan-history?limit=${limit}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to load privacy scan history");
+  return res.json();
+}
+
+export async function fetchPrivacyEvents(limit: number = 50): Promise<any[]> {
+  const res = await fetch(`${API_V1}/privacy/events?limit=${limit}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to load privacy events");
+  return res.json();
+}
+
+export async function previewRetentionPurge(retention_days?: number): Promise<any> {
+  const url = retention_days ? `${API_V1}/privacy/retention/preview?retention_days=${retention_days}` : `${API_V1}/privacy/retention/preview`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to generate retention preview");
+  return res.json();
+}
+
+export async function triggerRetentionPurge(retention_days?: number): Promise<any> {
+  const url = retention_days ? `${API_V1}/privacy/purge?retention_days=${retention_days}` : `${API_V1}/privacy/purge`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error("Failed to execute retention purge");
   return res.json();
 }
 

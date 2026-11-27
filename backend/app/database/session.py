@@ -10,35 +10,46 @@ from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError
 
-from app.core.config import DATABASE_URL
+from app.core.config import DATABASE_URL, IS_SQLITE
 from app.models.database import (
-    Base, Organization, User, PrivacyPolicy, ApplicationSetting
+    Base, Organization, User, PrivacyPolicy, ApplicationSetting,
+    HistoricalTelemetry, StorageTelemetry, PerformanceTelemetry,
+    SecurityEvent, SecurityScanResult, PrivacyEvent, PrivacyScanResult
 )
 from app.security.hasher import hash_password
 
 logger = logging.getLogger("aegisstor.database")
 
-# 1. Engine configuration with 60s timeout for lock contention resolution
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={
-        "check_same_thread": False,
-        "timeout": 60.0
-    },
-    pool_pre_ping=True
-)
+# 1. Engine configuration with dialect-specific settings
+if IS_SQLITE:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={
+            "check_same_thread": False,
+            "timeout": 60.0
+        },
+        pool_pre_ping=True
+    )
 
-# 2. Connection-level PRAGMAs: WAL mode, 60s busy_timeout, NORMAL synchronous
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    try:
-        cursor.execute("PRAGMA journal_mode=WAL;")
-        cursor.execute("PRAGMA busy_timeout=60000;")
-        cursor.execute("PRAGMA synchronous=NORMAL;")
-        cursor.execute("PRAGMA foreign_keys=ON;")
-    finally:
-        cursor.close()
+    # 2. Connection-level SQLite PRAGMAs: WAL mode, 60s busy_timeout, NORMAL synchronous
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA busy_timeout=60000;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA foreign_keys=ON;")
+        finally:
+            cursor.close()
+else:
+    # Standard connection pooling for PostgreSQL / MySQL in cloud environments (e.g. Render)
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -82,32 +93,36 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     
     # Safe SQLite column migrations for existing tables
-    with engine.connect() as conn:
-        tables_to_migrate = [
-            ("storage_telemetry", "org_id", "INTEGER DEFAULT 1"),
-            ("performance_telemetry", "org_id", "INTEGER DEFAULT 1"),
-            ("scan_results", "org_id", "INTEGER DEFAULT 1"),
-            ("forecast_results", "org_id", "INTEGER DEFAULT 1"),
-            ("forecast_results", "resource_type", "VARCHAR(50) DEFAULT 'LOCAL_DISK'"),
-            ("forecast_results", "resource_name", "VARCHAR(150)"),
-            ("forecast_results", "horizon_days", "INTEGER"),
-            ("risk_alerts", "org_id", "INTEGER DEFAULT 1"),
-            ("optimization_recommendations", "org_id", "INTEGER DEFAULT 1"),
-            ("simulation_results", "org_id", "INTEGER DEFAULT 1"),
-            ("audit_logs", "org_id", "INTEGER DEFAULT 1"),
-            ("audit_logs", "user_id", "INTEGER"),
-            ("audit_logs", "user_email", "VARCHAR(255)"),
-            ("audit_logs", "request_id", "VARCHAR(100)"),
-            ("audit_logs", "resource", "VARCHAR(255)"),
-            ("users", "must_change_password", "BOOLEAN DEFAULT 0"),
-        ]
-        for tbl, col, col_type in tables_to_migrate:
-            try:
-                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_type};"))
-                conn.commit()
-            except Exception:
-                # Column already exists
-                pass
+    if IS_SQLITE:
+        with engine.connect() as conn:
+            tables_to_migrate = [
+                ("storage_telemetry", "org_id", "INTEGER DEFAULT 1"),
+                ("performance_telemetry", "org_id", "INTEGER DEFAULT 1"),
+                ("scan_results", "org_id", "INTEGER DEFAULT 1"),
+                ("forecast_results", "org_id", "INTEGER DEFAULT 1"),
+                ("forecast_results", "resource_type", "VARCHAR(50) DEFAULT 'LOCAL_DISK'"),
+                ("forecast_results", "resource_name", "VARCHAR(150)"),
+                ("forecast_results", "horizon_days", "INTEGER"),
+                ("risk_alerts", "org_id", "INTEGER DEFAULT 1"),
+                ("optimization_recommendations", "org_id", "INTEGER DEFAULT 1"),
+                ("simulation_results", "org_id", "INTEGER DEFAULT 1"),
+                ("audit_logs", "org_id", "INTEGER DEFAULT 1"),
+                ("audit_logs", "user_id", "INTEGER"),
+                ("audit_logs", "user_email", "VARCHAR(255)"),
+                ("audit_logs", "request_id", "VARCHAR(100)"),
+                ("audit_logs", "resource", "VARCHAR(255)"),
+                ("users", "must_change_password", "BOOLEAN DEFAULT 0"),
+                ("privacy_policies", "detect_sensitive_data", "BOOLEAN DEFAULT 1"),
+                ("privacy_policies", "sensitive_detection_categories", "VARCHAR(255) DEFAULT 'EMAIL,PHONE,IP,CREDENTIAL,AWS_KEY,TOKEN'"),
+                ("privacy_policies", "auto_mask_telemetry", "BOOLEAN DEFAULT 1"),
+            ]
+            for tbl, col, col_type in tables_to_migrate:
+                try:
+                    conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_type};"))
+                    conn.commit()
+                except Exception:
+                    # Column already exists
+                    pass
 
     db = SessionLocal()
     try:
@@ -287,6 +302,58 @@ def init_db():
                 last_sync_at=datetime.utcnow()
             )
             db.add(sqlite_conn)
+
+        # 9. Verify and backfill HistoricalTelemetry if newly created and existing telemetry exists
+        hist_count = db.query(HistoricalTelemetry).count()
+        if hist_count == 0:
+            storage_rows = (
+                db.query(StorageTelemetry)
+                .order_by(StorageTelemetry.timestamp.asc())
+                .all()
+            )
+            if storage_rows:
+                perf_rows = (
+                    db.query(PerformanceTelemetry)
+                    .order_by(PerformanceTelemetry.timestamp.asc())
+                    .all()
+                )
+                perf_idx = 0
+                perf_len = len(perf_rows)
+                backfill_entries = []
+                for s in storage_rows:
+                    cpu_p = 0.0
+                    ram_p = 0.0
+                    ram_u_gb = 0.0
+                    ram_a_gb = 0.0
+                    while perf_idx < perf_len - 1 and perf_rows[perf_idx + 1].timestamp <= s.timestamp:
+                        perf_idx += 1
+                    if perf_len > 0:
+                        p = perf_rows[perf_idx]
+                        cpu_p = p.cpu_percent or 0.0
+                        ram_p = p.memory_percent or 0.0
+                        ram_u_gb = round((p.memory_used or 0.0) / (1024 ** 3), 2)
+                        ram_a_gb = round((p.memory_free or 0.0) / (1024 ** 3), 2)
+
+                    entry = HistoricalTelemetry(
+                        org_id=s.org_id or 1,
+                        timestamp_utc=s.timestamp,
+                        device_id=s.drive_name or "C:",
+                        total_storage_gb=round((s.total_bytes or 0.0) / (1024 ** 3), 2),
+                        used_storage_gb=round((s.used_bytes or 0.0) / (1024 ** 3), 2),
+                        free_storage_gb=round((s.free_bytes or 0.0) / (1024 ** 3), 2),
+                        utilization_percent=s.usage_percent or 0.0,
+                        cpu_percent=cpu_p,
+                        ram_percent=ram_p,
+                        ram_used_gb=ram_u_gb,
+                        ram_available_gb=ram_a_gb,
+                        disk_read_mb_s=round((s.read_bytes_sec or 0.0) / (1024 * 1024), 2),
+                        disk_write_mb_s=round((s.write_bytes_sec or 0.0) / (1024 * 1024), 2),
+                        collection_status="VERIFIED"
+                    )
+                    backfill_entries.append(entry)
+                if backfill_entries:
+                    db.bulk_save_objects(backfill_entries)
+                    logger.info(f"[init_db] Migrated/backfilled {len(backfill_entries)} records into historical_telemetry.")
 
         db.commit()
     except Exception as e:

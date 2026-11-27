@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.core.config import TELEMETRY_INTERVAL_SEC
 from app.database.session import init_db, engine
 from app.api.routes import router as legacy_api_router
 from app.api.v1.endpoints import api_v1
@@ -24,32 +25,36 @@ app_start_time = time.time()
 # Background telemetry worker lifecycle control
 stop_event = threading.Event()
 telemetry_lock = threading.Lock()
+worker_thread = None
 
 def telemetry_worker():
-    """Periodic background telemetry recorder (runs every 5 seconds)."""
+    """Periodic background telemetry recorder (runs every 5 seconds by default)."""
     db_sync_counter = 0
     notif_counter = 0
     hist_counter = 0
     while not stop_event.is_set():
         try:
             with telemetry_lock:
-                # 1. Local storage & performance telemetry (5s)
+                # 1. Local storage & performance telemetry
                 storage_monitor.record_telemetry_snapshot()
                 performance_monitor.record_telemetry_snapshot()
 
-                # 2. Historical time-series storage persistence (~30 seconds / 6 cycles)
+                # 2. Historical unified telemetry persistence (configurable interval, default 5s)
+                historical_pipeline.record_telemetry_snapshot()
+
+                # 3. Time-series storage persistence (~30 seconds / 6 cycles)
                 hist_counter += 1
                 if hist_counter >= 6:
                     historical_pipeline.record_local_storage_sample()
                     hist_counter = 0
 
-                # 3. Enterprise database sync every ~60 seconds (12 cycles)
+                # 4. Enterprise database sync every ~60 seconds (12 cycles)
                 db_sync_counter += 1
                 if db_sync_counter >= 12:
                     database_collector.collect_all_active_databases()
                     db_sync_counter = 0
 
-                # 4. Notification surveillance & alert rules evaluation (~15s)
+                # 5. Notification surveillance & alert rules evaluation (~15s)
                 notif_counter += 1
                 if notif_counter >= 3:
                     notification_engine.process_live_telemetry_snapshot()
@@ -59,24 +64,26 @@ def telemetry_worker():
             print(f"[TelemetryWorker] Sampling error: {e}")
             
         # Non-blocking sleep responsive to stop_event
-        stop_event.wait(5.0)
+        stop_event.wait(TELEMETRY_INTERVAL_SEC)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global app_start_time
+    global app_start_time, worker_thread
     app_start_time = time.time()
     print("[AEGISSTOR] Initializing database and enterprise security subsystem...")
     init_db()
 
-    # Start telemetry collector daemon thread
-    stop_event.clear()
-    t = threading.Thread(target=telemetry_worker, daemon=True)
-    t.start()
-    print("[AEGISSTOR] Live telemetry engine active (5s interval).")
+    # Start telemetry collector daemon thread, guarding against duplicate threads on reload
+    if worker_thread is None or not worker_thread.is_alive():
+        stop_event.clear()
+        worker_thread = threading.Thread(target=telemetry_worker, daemon=True, name="AEGISSTOR-TelemetryWorker")
+        worker_thread.start()
+        print(f"[AEGISSTOR] Live telemetry engine active ({TELEMETRY_INTERVAL_SEC}s interval).")
     yield
     print("[AEGISSTOR] Shutting down telemetry engine...")
     stop_event.set()
-    t.join(timeout=3.0)
+    if worker_thread and worker_thread.is_alive():
+        worker_thread.join(timeout=3.0)
     print("[AEGISSTOR] Telemetry engine shut down cleanly.")
 
 app = FastAPI(
@@ -94,6 +101,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# HTTP Security Headers Middleware
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 # Root health endpoint
 @app.get("/health")
@@ -120,7 +137,6 @@ app.include_router(api_v1, prefix="/api/v1")
 app.include_router(legacy_api_router, prefix="/api")
 
 if __name__ == "__main__":
-    import os
     import uvicorn
-    port = int(os.getenv("PORT", 8008))
-    uvicorn.run("app.main:app", host="127.0.0.1", port=port, reload=True)
+    from app.core.config import HOST, PORT
+    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=True)
